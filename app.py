@@ -31,7 +31,7 @@ def choose_best_pairing(four: Tuple[int, int, int, int], partner_counts) -> Tupl
     return best
 
 def generate_schedule(n_players: int, games_per_player: int, seed: int | None = None) -> List[Game]:
-    """파트너 중복을 최소화하며 대진 생성. 실패 시 8명/4게임 폴백 제공."""
+    """파트너 중복 최소화 대진 생성. 실패 시 8명/4게임 폴백 제공."""
     rnd = random.Random(seed)
     total_games = (n_players * games_per_player) // 4
 
@@ -88,7 +88,7 @@ def generate_schedule(n_players: int, games_per_player: int, seed: int | None = 
     if best_sched is not None:
         return best_sched
 
-    # 폴백 (8명/4게임) — 사진 예시와 동일하게 8게임
+    # 폴백 (8명/4게임) — 총 8게임
     if n_players == 8 and games_per_player == 4:
         return [
             ((0, 1), (2, 3)),
@@ -153,16 +153,15 @@ def compute_tables(schedule: List[Game], scores: List[Tuple[int | None, int | No
     return vs_df, rank_df, rounds_by_player
 
 # =============================
-# 사이드바(좌): 인원 선택 등
+# 사이드바
 # =============================
 with st.sidebar:
     st.header("대회 설정")
-    n_players = st.number_input("참가 인원(짝수)", min_value=4, max_value=16, value=8, step=2)
+    n_players = st.number_input("참가 인원(짝수)", min_value=8, max_value=16, value=8, step=2)  # 사진 기준 8명 기본
     default_gpp = n_players // 2  # 8명 → 1인 4게임
     games_per_player = st.slider("1인당 경기 수", min_value=max(2, n_players // 4), max_value=n_players - 1, value=default_gpp)
     win_target = st.number_input("게임 종료 점수(예: 6)", min_value=4, max_value=8, value=6)
     seed = st.number_input("스케줄 시드", min_value=0, max_value=99999, value=22)
-    my_no = st.number_input("내 번호(하이라이트)", min_value=1, max_value=16, value=1)
     gen = st.button("대진표 생성", type="primary")
 
 if gen:
@@ -176,16 +175,13 @@ if "names" not in st.session_state:
     st.info("좌측에서 인원을 설정하고 **대진표 생성**을 눌러 시작해줘.")
     st.stop()
 
-# 선수 이름 입력
+# 선수 이름 입력(상단 간단)
 st.subheader("선수 명단 입력")
 names = st.session_state["names"]
 cols = st.columns(4)
 for i in range(len(names)):
     with cols[i % 4]:
-        prefix = "➡️ " if (i+1) == my_no else ""
-        names[i] = st.text_input(f"번호 {i+1}", value=prefix + names[i] if prefix and not names[i].startswith("➡️ ") else names[i], key=f"name_{i}")
-        if prefix == "" and names[i].startswith("➡️ "):
-            names[i] = names[i].replace("➡️ ", "", 1)
+        names[i] = st.text_input(f"번호 {i+1}", value=names[i], key=f"name_{i}")
 st.session_state["names"] = names
 
 st.divider()
@@ -193,104 +189,82 @@ st.divider()
 schedule: List[Game] = st.session_state["schedule"]
 scores: List[Tuple[int | None, int | None]] = st.session_state["scores"]
 
-# 상단: VS 숫자표 + 명단/규정 (중복 표는 아래에서 출력하지 않음)
-c_left, c_right = st.columns([1, 1])
-with c_left:
-    st.subheader("대진표 (VS 숫자표)")
-    tmp_vs_rows = [{"구분": f"게임 {i+1}", "VS": f"{a1+1}{a2+1} : {b1+1}{b2+1}"} for i, ((a1,a2),(b1,b2)) in enumerate(schedule)]
-    st.dataframe(pd.DataFrame(tmp_vs_rows), hide_index=True, use_container_width=True)
-with c_right:
-    st.subheader("선수 명단")
-    st.markdown("\n".join([f"{i+1}. {names[i]}" for i in range(len(names))]))
-    st.caption("동률 판정(앱 정렬): 득실차 → 승수 → 득점 → 실점")
+# =============================
+# 상단: 대진표(숫자) + 바로 점수 입력
+# =============================
+st.subheader("대진표 & 점수 입력")
+for idx, ((a1, a2), (b1, b2)) in enumerate(schedule, start=1):
+    c1, c2, c3, c4 = st.columns([1.1, 3.6, 1, 1])
+    with c1:
+        st.markdown(f"**게임 {idx}**")
+        st.caption(f"{a1+1}{a2+1} : {b1+1}{b2+1}")  # 숫자 VS (예: 14:78)
+    with c2:
+        st.write(f"A팀: {names[a1]} & {names[a2]}  |  B팀: {names[b1]} & {names[b2]}")
+    a_init, b_init = scores[idx - 1]
+    with c3:
+        a_sc = st.number_input(f"A{idx}", min_value=0, max_value=int(win_target), value=int(a_init) if a_init is not None else 0, key=f"g{idx}_A")
+    with c4:
+        b_sc = st.number_input(f"B{idx}", min_value=0, max_value=int(win_target), value=int(b_init) if b_init is not None else 0, key=f"g{idx}_B")
+    # 유효 저장: 한쪽이 win_target 이고 다른 쪽은 미만
+    if (a_sc == win_target and b_sc < win_target) or (b_sc == win_target and a_sc < win_target):
+        scores[idx - 1] = (a_sc, b_sc)
+    else:
+        scores[idx - 1] = (None, None)
 
-# --- 게임별 '편집 주인' 지정 (한 게임당 입력창 1세트만 노출) ---
-game_owner: Dict[int, int] = {}  # g_idx(1-based) -> owner player index
-for idx, ((a1,a2),(b1,b2)) in enumerate(schedule, start=1):
-    game_owner[idx] = min(a1, a2, b1, b2)
-
-# 하단: 개인 1R~4R 표 (여기서만 점수 입력)
-st.subheader("개인 경기 기록 (1R~4R) 입력 및 순위")
-# 각 선수의 출전 라운드 계산(표시용)
-_, _, rounds_by_player = compute_tables(schedule, scores, names, win_target)
-max_rounds = max(len(v) for v in rounds_by_player.values()) if rounds_by_player else 0
-round_cols = [f"{r}R" for r in range(1, max_rounds + 1)]
-
-# 헤더
-header = st.columns([0.7, 1.6] + [1.4]*max_rounds + [0.8,0.8,0.8,0.9,0.8])
-header[0].markdown("**구분**"); header[1].markdown("**이름**")
-for r in range(max_rounds):
-    header[2+r].markdown(f"**{r+1}R**")
-base_idx = 2+max_rounds
-for t, lab in enumerate(["승수","득점","실점","득실차","순위"]):
-    header[base_idx+t].markdown(f"**{lab}**")
-
-# 행 렌더링
-for i in range(len(names)):
-    cols = st.columns([0.7, 1.6] + [1.4]*max_rounds + [0.8,0.8,0.8,0.9,0.8])
-    cols[0].write(i+1)
-    cols[1].write(names[i])
-
-    # 각 라운드 셀
-    lst = rounds_by_player[i]  # 이 선수의 출전 게임 리스트(1-based)
-    for r in range(1, max_rounds+1):
-        cell = cols[1+r]
-        if r > len(lst):
-            cell.markdown(":")
-            continue
-        g_idx = lst[r-1]
-        (a1, a2), (b1, b2) = schedule[g_idx-1]
-        sA, sB = scores[g_idx-1]
-
-        # 소유자 판단 + 팀 판단
-        owner = game_owner[g_idx]
-        in_A = (i in (a1, a2))
-        # 입력 키(게임 단위로 통일)
-        keyA, keyB = f"g{g_idx}_A", f"g{g_idx}_B"
-
-        if i == owner:
-            # 이 셀만 입력창 (한 게임당 한 번만 렌더)
-            sub = cell.container()
-            c1, c2, c3 = sub.columns([1, 0.3, 1])
-            valA = c1.number_input(keyA, min_value=0, max_value=int(win_target), value=int(sA) if sA is not None else 0)
-            c2.markdown(":vs:")
-            valB = c3.number_input(keyB, min_value=0, max_value=int(win_target), value=int(sB) if sB is not None else 0)
-            sub.caption("편집")
-            # 저장 규칙: 한쪽이 win_target이어야 유효
-            if (valA == win_target and valB < win_target) or (valB == win_target and valA < win_target):
-                scores[g_idx-1] = (valA, valB)
-            else:
-                scores[g_idx-1] = (None, None)
-        else:
-            # 읽기 전용 표시(우리팀 관점 점수 순서로 보여줌)
-            if sA is None or sB is None:
-                cell.markdown(":")
-            else:
-                txt = f"{sA}:{sB}" if in_A else f"{sB}:{sA}"
-                cell.markdown(txt)
-
-    # 통계/순위는 잠정(입력 반영 후 아래에서 계산)
-    cols[base_idx+0].write("")  # 승수
-    cols[base_idx+1].write("")  # 득점
-    cols[base_idx+2].write("")  # 실점
-    cols[base_idx+3].write("")  # 득실차
-    cols[base_idx+4].write("")  # 순위
-
-# 입력 반영 저장
 st.session_state["scores"] = scores
 
-# 최종 순위/통계 산출 및 표 표시(한 번만)
-vs_df, rank_df, _ = compute_tables(schedule, scores, names, win_target)
+st.divider()
 
-# 개인 표 아래에 순위표(간단히)만 붙이기
-rank_show = rank_df[["순위","이름","승수","득점","실점","득실차"]].reset_index(drop=True)
-st.markdown("### 개인 순위/통계")
-st.dataframe(rank_show, use_container_width=True, hide_index=True)
+# =============================
+# 하단: 개인 1R~4R 테이블 + 순위
+# =============================
+vs_df, rank_df, rounds_by_player = compute_tables(schedule, scores, names, win_target)
+
+st.subheader("개인 경기 기록 (1R~4R) 및 순위")
+max_rounds = max(len(v) for v in rounds_by_player.values()) if rounds_by_player else 0
+round_cols = [f"{r}R" for r in range(1, max_rounds + 1 if max_rounds > 0 else 1)]
+
+def round_cell_text(player_idx: int, r: int) -> str:
+    """해당 선수의 r번째 출전 경기 점수(본인 팀 기준). 없으면 ':'"""
+    lst = rounds_by_player[player_idx]
+    if r > len(lst): return ":"
+    g_idx = lst[r-1]  # 1-based
+    (a1, a2), (b1, b2) = schedule[g_idx-1]
+    sA, sB = scores[g_idx-1]
+    if sA is None or sB is None:
+        return ":"
+    return f"{sA}:{sB}" if player_idx in (a1, a2) else f"{sB}:{sA}"
+
+rows = []
+for i in range(len(names)):
+    row = {"구분": i+1, "이름": names[i]}
+    for r in range(1, (max_rounds + 1) if max_rounds > 0 else 1):
+        row[f"{r}R"] = round_cell_text(i, r)
+    # 통계/순위 병합
+    rstat = rank_df.loc[rank_df["이름"] == names[i]].iloc[0]
+    row.update({
+        "승수": int(rstat["승수"]),
+        "득점": int(rstat["득점"]),
+        "실점": int(rstat["실점"]),
+        "득실차": int(rstat["득실차"]),
+        "순위": int(rstat["순위"]),
+    })
+    rows.append(row)
+
+# 표 컬럼 순서 고정: 1R~4R까지만 보이고, 그 이하 인원은 ':'로 채움
+wanted_rounds = ["1R","2R","3R","4R"]
+for row in rows:
+    for lab in wanted_rounds:
+        if lab not in row: row[lab] = ":"
+
+personal_df = pd.DataFrame(rows, columns=(["구분","이름"] + wanted_rounds + ["승수","득점","실점","득실차","순위"]))
+st.dataframe(personal_df, use_container_width=True, hide_index=True)
 
 # 다운로드/백업
 with st.expander("CSV 내보내기 / 상태 백업·복원"):
-    st.download_button("VS 숫자표 CSV", vs_df.to_csv(index=False).encode("utf-8-sig"), file_name="vs_table.csv")
-    st.download_button("순위표 CSV", rank_show.to_csv(index=False).encode("utf-8-sig"), file_name="ranking.csv")
+    st.download_button("개인 기록표 CSV", personal_df.to_csv(index=False).encode("utf-8-sig"), file_name="personal_table.csv")
+    st.download_button("순위표 CSV", rank_df[["순위","이름","승수","득점","실점","득실차"]].reset_index(drop=True).to_csv(index=False).encode("utf-8-sig"),
+                       file_name="ranking.csv")
     state_blob = json.dumps({"names": names, "schedule": schedule, "scores": scores, "meta": {"win_target": win_target}}, ensure_ascii=False)
     st.download_button("상태 백업(JSON)", state_blob.encode("utf-8"), file_name="mokwoo_state.json")
     up = st.file_uploader("상태 복원(JSON)", type=["json"])
