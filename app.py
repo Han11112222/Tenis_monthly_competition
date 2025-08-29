@@ -117,12 +117,9 @@ def generate_schedule(n_players: int, games_per_player: int, seed: int | None = 
 def compute_tables(schedule: List[Game], scores: List[Tuple[int | None, int | None]], names: List[str], win_target: int):
     n = len(names)
     stats = {i: {"이름": names[i], "경기수": 0, "승수": 0, "득점": 0, "실점": 0} for i in range(n)}
-
-    vs_rows = []
     rounds_by_player: Dict[int, list] = {i: [] for i in range(n)}  # 각 선수의 출전 게임 번호(1-based)
 
     for idx, ((a1, a2), (b1, b2)) in enumerate(schedule, start=1):
-        vs_rows.append({"구분": f"게임 {idx}", "VS": f"{a1+1}{a2+1} : {b1+1}{b2+1}"})
         for p in [a1, a2, b1, b2]:
             rounds_by_player[p].append(idx)
 
@@ -143,14 +140,12 @@ def compute_tables(schedule: List[Game], scores: List[Tuple[int | None, int | No
         elif sB == win_target and sA < win_target:
             stats[b1]["승수"] += 1; stats[b2]["승수"] += 1
 
-    vs_df = pd.DataFrame(vs_rows)
-
     rank_df = pd.DataFrame(stats).T
     rank_df["득실차"] = rank_df["득점"] - rank_df["실점"]
     rank_df = rank_df.sort_values(by=["득실차", "승수", "득점", "실점"], ascending=[False, False, False, True])
     rank_df.insert(0, "순위", range(1, len(rank_df) + 1))
 
-    return vs_df, rank_df, rounds_by_player
+    return rank_df, rounds_by_player
 
 # =============================
 # 사이드바
@@ -175,7 +170,9 @@ if "names" not in st.session_state:
     st.info("좌측에서 인원을 설정하고 **대진표 생성**을 눌러 시작해줘.")
     st.stop()
 
-# 선수 이름 입력(상단 간단)
+# =============================
+# ① 선수 명단 입력
+# =============================
 st.subheader("선수 명단 입력")
 names = st.session_state["names"]
 cols = st.columns(4)
@@ -190,22 +187,36 @@ schedule: List[Game] = st.session_state["schedule"]
 scores: List[Tuple[int | None, int | None]] = st.session_state["scores"]
 
 # =============================
-# 상단: 대진표(숫자) + 바로 점수 입력
+# ② 대진표(숫자만)
 # =============================
-st.subheader("대진표 & 점수 입력")
+st.subheader("대진표 (숫자)")
+vs_simple = [{"게임": f"게임{i+1}", "VS": f"{a1+1}{a2+1} : {b1+1}{b2+1}"} for i, ((a1,a2),(b1,b2)) in enumerate(schedule)]
+st.dataframe(pd.DataFrame(vs_simple), hide_index=True, use_container_width=True)
+
+st.divider()
+
+# =============================
+# ③ 대진표 & 점수입력 (이름 포함 표)
+# =============================
+st.subheader("대진표 & 점수입력")
+# 헤더
+h = st.columns([1.1, 3, 3, 1, 1])
+h[0].markdown("**구분**")
+h[1].markdown("**A팀 player**")
+h[2].markdown("**B팀 player**")
+h[3].markdown("**A팀 점수**")
+h[4].markdown("**B팀 점수**")
+
 for idx, ((a1, a2), (b1, b2)) in enumerate(schedule, start=1):
-    c1, c2, c3, c4 = st.columns([1.1, 3.6, 1, 1])
-    with c1:
-        st.markdown(f"**게임 {idx}**")
-        st.caption(f"{a1+1}{a2+1} : {b1+1}{b2+1}")  # 숫자 VS (예: 14:78)
-    with c2:
-        st.write(f"A팀: {names[a1]} & {names[a2]}  |  B팀: {names[b1]} & {names[b2]}")
+    c = st.columns([1.1, 3, 3, 1, 1])
+    c[0].write(f"게임{idx}")
+    c[1].write(f"{names[a1]}, {names[a2]}")
+    c[2].write(f"{names[b1]}, {names[b2]}")
     a_init, b_init = scores[idx - 1]
-    with c3:
-        a_sc = st.number_input(f"A{idx}", min_value=0, max_value=int(win_target), value=int(a_init) if a_init is not None else 0, key=f"g{idx}_A")
-    with c4:
-        b_sc = st.number_input(f"B{idx}", min_value=0, max_value=int(win_target), value=int(b_init) if b_init is not None else 0, key=f"g{idx}_B")
-    # 유효 저장: 한쪽이 win_target 이고 다른 쪽은 미만
+    a_sc = c[3].number_input(f"A{idx}", min_value=0, max_value=int(win_target),
+                             value=int(a_init) if a_init is not None else 0, key=f"g{idx}_A")
+    b_sc = c[4].number_input(f"B{idx}", min_value=0, max_value=int(win_target),
+                             value=int(b_init) if b_init is not None else 0, key=f"g{idx}_B")
     if (a_sc == win_target and b_sc < win_target) or (b_sc == win_target and a_sc < win_target):
         scores[idx - 1] = (a_sc, b_sc)
     else:
@@ -216,16 +227,12 @@ st.session_state["scores"] = scores
 st.divider()
 
 # =============================
-# 하단: 개인 1R~4R 테이블 + 순위
+# ④ 개인 기록(1R~4R) 및 순위 (구분 제거, 1위부터, TOP3 강조)
 # =============================
-vs_df, rank_df, rounds_by_player = compute_tables(schedule, scores, names, win_target)
+rank_df, rounds_by_player = compute_tables(schedule, scores, names, win_target)
 
-st.subheader("개인 경기 기록 (1R~4R) 및 순위")
-max_rounds = max(len(v) for v in rounds_by_player.values()) if rounds_by_player else 0
-round_cols = [f"{r}R" for r in range(1, max_rounds + 1 if max_rounds > 0 else 1)]
-
+# 개인 라운드 텍스트
 def round_cell_text(player_idx: int, r: int) -> str:
-    """해당 선수의 r번째 출전 경기 점수(본인 팀 기준). 없으면 ':'"""
     lst = rounds_by_player[player_idx]
     if r > len(lst): return ":"
     g_idx = lst[r-1]  # 1-based
@@ -235,36 +242,60 @@ def round_cell_text(player_idx: int, r: int) -> str:
         return ":"
     return f"{sA}:{sB}" if player_idx in (a1, a2) else f"{sB}:{sA}"
 
+# 순위 오름차순으로 재정렬 후, 구분 제거
+ordered = rank_df.sort_values("순위").copy()
 rows = []
-for i in range(len(names)):
-    row = {"구분": i+1, "이름": names[i]}
-    for r in range(1, (max_rounds + 1) if max_rounds > 0 else 1):
-        row[f"{r}R"] = round_cell_text(i, r)
-    # 통계/순위 병합
-    rstat = rank_df.loc[rank_df["이름"] == names[i]].iloc[0]
-    row.update({
-        "승수": int(rstat["승수"]),
-        "득점": int(rstat["득점"]),
-        "실점": int(rstat["실점"]),
-        "득실차": int(rstat["득실차"]),
-        "순위": int(rstat["순위"]),
+for _, r in ordered.iterrows():
+    i = names.index(r["이름"])  # player index
+    rows.append({
+        "이름": r["이름"],
+        "1R": round_cell_text(i, 1),
+        "2R": round_cell_text(i, 2),
+        "3R": round_cell_text(i, 3),
+        "4R": round_cell_text(i, 4),
+        "승수": int(r["승수"]),
+        "득점": int(r["득점"]),
+        "실점": int(r["실점"]),
+        "득실차": int(r["득실차"]),
+        "순위": int(r["순위"]),
     })
-    rows.append(row)
 
-# 표 컬럼 순서 고정: 1R~4R까지만 보이고, 그 이하 인원은 ':'로 채움
-wanted_rounds = ["1R","2R","3R","4R"]
-for row in rows:
-    for lab in wanted_rounds:
-        if lab not in row: row[lab] = ":"
+table_df = pd.DataFrame(rows, columns=["이름","1R","2R","3R","4R","승수","득점","실점","득실차","순위"])
 
-personal_df = pd.DataFrame(rows, columns=(["구분","이름"] + wanted_rounds + ["승수","득점","실점","득실차","순위"]))
-st.dataframe(personal_df, use_container_width=True, hide_index=True)
+# TOP3 꾸미기: 메달 + 행 하이라이트
+medal = {1:"🥇", 2:"🥈", 3:"🥉"}
+table_df["순위"] = table_df["순위"].apply(lambda x: f"{medal.get(x,'')} {x}".strip())
+
+def highlight_top3(row):
+    raw_rank = int(row["순위"].split()[-1])  # "🥇 1" → 1
+    if raw_rank == 1:
+        return ["background-color: #fff3b0; font-weight: 700" for _ in row]
+    if raw_rank == 2:
+        return ["background-color: #e5e7eb; font-weight: 600" for _ in row]
+    if raw_rank == 3:
+        return ["background-color: #f5e1c8; font-weight: 600" for _ in row]
+    return [""] * len(row)
+
+st.subheader("개인 경기 기록 (1R~4R) 및 순위")
+st.dataframe(table_df.style.apply(highlight_top3, axis=1), use_container_width=True, hide_index=True)
 
 # 다운로드/백업
 with st.expander("CSV 내보내기 / 상태 백업·복원"):
-    st.download_button("개인 기록표 CSV", personal_df.to_csv(index=False).encode("utf-8-sig"), file_name="personal_table.csv")
-    st.download_button("순위표 CSV", rank_df[["순위","이름","승수","득점","실점","득실차"]].reset_index(drop=True).to_csv(index=False).encode("utf-8-sig"),
-                       file_name="ranking.csv")
+    st.download_button("대진표(숫자) CSV",
+                       pd.DataFrame(vs_simple).to_csv(index=False).encode("utf-8-sig"),
+                       file_name="vs_numeric.csv")
+    st.download_button("대진표&점수입력 CSV",
+                       pd.DataFrame([{
+                           "구분": f"게임{i+1}",
+                           "A팀 player": f"{names[a1]}, {names[a2]}",
+                           "B팀 player": f"{names[b1]}, {names[b2]}",
+                           "A팀 점수": scores[i][0] if scores[i][0] is not None else "",
+                           "B팀 점수": scores[i][1] if scores[i][1] is not None else "",
+                       } for i, ((a1,a2),(b1,b2)) in enumerate(schedule)]).to_csv(index=False).encode("utf-8-sig"),
+                       file_name="vs_with_scores.csv")
+    st.download_button("개인 기록/순위 CSV",
+                       table_df.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="personal_ranking.csv")
     state_blob = json.dumps({"names": names, "schedule": schedule, "scores": scores, "meta": {"win_target": win_target}}, ensure_ascii=False)
     st.download_button("상태 백업(JSON)", state_blob.encode("utf-8"), file_name="mokwoo_state.json")
     up = st.file_uploader("상태 복원(JSON)", type=["json"])
