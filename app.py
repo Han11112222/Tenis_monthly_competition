@@ -1,6 +1,6 @@
 from __future__ import annotations
 import random, json, re
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 import pandas as pd
 import streamlit as st
@@ -105,20 +105,32 @@ def parse_numbers_line(s: str) -> list[int]:
     return out
 
 # ---------- 팀전 스케줄 유틸 ----------
-def latin_cross_rounds(blue_pairs: list[tuple[int,int]],
-                       white_pairs: list[tuple[int,int]],
-                       rounds: int) -> list[Game]:
+def round_robin_intra_team(pair_list: list[tuple[int,int]]) -> list[Game]:
     """
-    k=쌍 수(팀인원/2). round r에서 blue[i] vs white[(i+r)%k]
-    rounds는 1~k 범위(최대 k라운드)
+    같은 팀 내부의 풀리그(페어 간) 스케줄을 Game 형태로 반환.
+    k=4일 때는 요청 패턴(1:4,2:3,1:3,2:4,1:2,3:4)을 그대로 사용.
     """
-    k = len(blue_pairs)
-    rounds = max(1, min(rounds, k))
-    sched: list[Game] = []
-    for r in range(rounds):
-        for i in range(k):
-            sched.append((blue_pairs[i], white_pairs[(i+r) % k]))
-    return sched  # 길이 = rounds * k
+    k = len(pair_list)
+    matches_idx: list[tuple[int,int]] = []
+    if k == 4:
+        # 인덱스(0..3) 기준 → 1:4, 2:3, 1:3, 2:4, 1:2, 3:4
+        matches_idx = [(0,3),(1,2),(0,2),(1,3),(0,1),(2,3)]
+    else:
+        # 일반화(circle method)
+        idx = list(range(k))
+        if k % 2 == 1:
+            idx.append(None); k += 1
+        rounds = k - 1
+        arr = idx[:]
+        for _ in range(rounds):
+            half = k // 2
+            for i in range(half):
+                a = arr[i]; b = arr[-(i+1)]
+                if a is None or b is None: continue
+                if a < b: matches_idx.append((a,b))
+                else:     matches_idx.append((b,a))
+            arr = [arr[0]] + [arr[-1]] + arr[1:-1]
+    return [(pair_list[i], pair_list[j]) for (i,j) in matches_idx]
 
 def pair_in_team_random(team: list[int], rng: random.Random) -> list[tuple[int,int]]:
     """팀 내부 랜덤 페어링(재현 가능한 시드)"""
@@ -168,12 +180,9 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
     반환: pair_df(팀, 팀내순위, 페어(tuple), 표시명, 승/득/실/득실차)
     """
     pair_keys = list(pair_labels.keys())
-    # 초기화
     stats = {
         p: {"팀": "청" if pair_labels[p]==0 else "백",
-            "페어": p,
-            "표시명": "",
-            "경기수": 0, "승수": 0, "득점": 0, "실점": 0}
+            "페어": p, "표시명": "", "경기수": 0, "승수": 0, "득점": 0, "실점": 0}
         for p in pair_keys
     }
     for p in stats:
@@ -181,40 +190,30 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
         prefix = "청" if pair_labels[p]==0 else "백"
         stats[p]["표시명"] = f"{prefix}({a+1},{b+1}) · {names[a]} & {names[b]}"
 
-    # 경기 반영
     for idx, ((a1,a2),(b1,b2)) in enumerate(schedule, start=1):
         A = tuple(sorted((a1,a2)))
         B = tuple(sorted((b1,b2)))
-        if A not in stats or B not in stats:
-            continue  # 변동 모드 대비
         sA, sB = scores[idx-1]
-        if sA is None or sB is None:
-            continue
+        if sA is None or sB is None: continue
         for K,sc_for,sc_against in [(A,sA,sB),(B,sB,sA)]:
-            stats[K]["경기수"] += 1
-            stats[K]["득점"] += sc_for
-            stats[K]["실점"] += sc_against
-        if sA == win_target and sB < win_target:
+            if K in stats:
+                stats[K]["경기수"] += 1
+                stats[K]["득점"] += sc_for
+                stats[K]["실점"] += sc_against
+        if sA == win_target and sB < win_target and A in stats and B in stats:
             stats[A]["승수"] += 1
-        elif sB == win_target and sA < win_target:
+        elif sB == win_target and sA < win_target and A in stats and B in stats:
             stats[B]["승수"] += 1
 
     pair_df = pd.DataFrame(stats).T
     pair_df["득실차"] = pair_df["득점"] - pair_df["실점"]
-
-    # 팀 먼저, 팀 내부 정렬(득실차↓, 승수↓, 득점↓, 실점↑)
     pair_df = pair_df.sort_values(
         by=["팀","득실차","승수","득점","실점"],
         ascending=[True, False, False, False, True]
     ).copy()
-
-    # 팀 내 순위 = 1..k 로 부여
     pair_df["팀내순위"] = pair_df.groupby("팀").cumcount() + 1
-
-    # 표시는 정수
     for col in ["경기수","승수","득점","실점","득실차","팀내순위"]:
         pair_df[col] = pair_df[col].astype(int)
-
     return pair_df
 
 # ========================= 사이드바 =========================
@@ -223,10 +222,10 @@ with st.sidebar:
     mode = st.radio("복식 모드 선택", ["각자복식(개인)", "팀전 · 파트너 고정", "팀전 · 파트너 변동"])
 
     if "팀전" in mode:
-        # 팀전도 참가 인원 조정 가능: 8~32명, 4의 배수
         n_players = st.number_input("참가 인원(팀전, 4의 배수)", min_value=8, max_value=32, value=16, step=4)
         team_size = n_players // 2
-        games_per_player = st.slider("1인당 경기 수(최소 3)", min_value=3, max_value=max(3, team_size//2), value=4)
+        # 팀전·고정 예선은 팀내 페어(k=team_size/2) 풀리그 → 페어당 (k-1)경기 = 3(8명 기준)
+        games_per_player = st.slider("1인당 경기 수(최소 3)", min_value=3, max_value=max(3, team_size//2), value=3)
     else:
         n_players = st.number_input("참가 인원(짝수)", min_value=8, max_value=16, value=8, step=2)
         default_gpp = 4 if n_players == 8 else max(3, n_players // 4)
@@ -241,7 +240,6 @@ with st.sidebar:
         st.caption("청팀 번호를 한 줄로 입력(쉼표/공백 구분). 나머지는 자동으로 백팀.")
         default_blue = " ".join(str(i) for i in range(1, (n_players//2)+1))
         blue_line = st.text_input("청팀 번호 입력 예) 1 2 3 4 9 10 11 12", value=default_blue)
-        # 자동 백팀 미리보기
         blue_sel = sorted(set(parse_numbers_line(blue_line)))
         blue_sel = [x for x in blue_sel if 1 <= x <= n_players]
         auto_white = [i for i in range(1, n_players+1) if i not in blue_sel]
@@ -252,7 +250,6 @@ with st.sidebar:
         if mode == "팀전 · 파트너 고정":
             st.subheader("🔗 파트너 고정 입력(한 줄)")
             st.caption("형식: 1-2 3-4 ... / 팀 내부에서만 쌍을 구성")
-            # 기본값: 팀 내부에서 (1-2)(3-4)…
             default_bp = " ".join(f"{i}-{i+1}" for i in range(1, n_players//2, 2))
             default_wp = " ".join(f"{i}-{i+1}" for i in range(n_players//2+1, n_players, 2))
             blue_pairs_line  = st.text_input("청팀 파트너", value=default_bp)
@@ -286,14 +283,13 @@ if gen:
         st.session_state["vs_codes"] = vs_codes
         st.session_state["scores"] = [(None,None) for _ in schedule]
         st.session_state["pair_info"] = None
-        st.session_state["finals"] = {"bronze": (None,None), "final": (None,None)}
+        st.session_state["finals"] = {"final": (None,None), "bronze": (None,None)}
 
     else:
         # 팀 준비
         team_size = n_players // 2
         if n_players % 4 != 0:
-            st.error("팀전은 전체 인원이 4의 배수여야 해(팀당 짝수로 페어링).")
-            st.stop()
+            st.error("팀전은 전체 인원이 4의 배수여야 해(팀당 짝수로 페어링)."); st.stop()
         blue_sel = sorted(set(parse_numbers_line(blue_line)))
         blue_sel = [x for x in blue_sel if 1 <= x <= n_players]
         if len(blue_sel) != team_size:
@@ -312,26 +308,31 @@ if gen:
         if mode == "팀전 · 파트너 고정":
             bp = parse_pairs_line(blue_pairs_line or "")
             wp = parse_pairs_line(white_pairs_line or "")
-            # 유효성: 팀 내부 페어, k쌍
+
             def valid_pairs(pairs: list[tuple[int,int]], team: list[int]) -> bool:
                 if len(pairs) != k: return False
                 ts = set(team)
                 return all(a in ts and b in ts for a,b in pairs)
+
             if not (valid_pairs(bp, blue_team) and valid_pairs(wp, white_team)):
                 st.error(f"파트너 고정은 팀 내부에서 정확히 {k}쌍을 지정해야 해."); st.stop()
 
-            rounds = min(games_per_player, k)
-            schedule = latin_cross_rounds(bp, wp, rounds)
+            # 예선: 팀 내부 풀리그(이미지 순서 고정)
+            prelim_blue  = round_robin_intra_team(bp)   # 6게임
+            prelim_white = round_robin_intra_team(wp)   # 6게임
+            schedule: list[Game] = prelim_blue + prelim_white
             vs_codes = make_vs_codes(schedule)
 
             pair_labels = {}
             for a,b in bp: pair_labels[tuple(sorted((a,b)))] = 0  # 청
             for a,b in wp: pair_labels[tuple(sorted((a,b)))] = 1  # 백
+
             st.session_state["pair_info"] = {
                 "mode": "fixed",
                 "blue_pairs": bp,
                 "white_pairs": wp,
                 "pair_labels": pair_labels,
+                "prelim_counts": {"blue": len(prelim_blue), "white": len(prelim_white)}
             }
 
         else:  # 팀전 · 파트너 변동
@@ -344,12 +345,12 @@ if gen:
                 for i in range(k):
                     schedule.append((bp[i], wp[i]))
             vs_codes = make_vs_codes(schedule)
-            st.session_state["pair_info"] = None  # 변동은 페어 고정X, 결승 비적용
+            st.session_state["pair_info"] = None
 
         st.session_state["schedule"] = schedule
         st.session_state["vs_codes"] = vs_codes
         st.session_state["scores"] = [(None,None) for _ in schedule]
-        st.session_state["finals"] = {"bronze": (None,None), "final": (None,None)}
+        st.session_state["finals"] = {"final": (None,None), "bronze": (None,None)}
 
 # ========================= 본문 =========================
 st.title("🎾 목우회 월례회 대진표")
@@ -395,11 +396,21 @@ st.subheader("📋 대진표 (숫자 + 팀 이름)")
 edit_mode = st.checkbox("대진표 숫자 수정 모드", value=False,
                         help="예: 18:27 (8명) / 1,10:2,9 (10명 이상)")
 
+# 예선 그룹 라벨(팀전·고정일 때)
+group_marks: list[str] = []
+if pair_info and pair_info.get("mode") == "fixed":
+    bc = pair_info["prelim_counts"]["blue"]
+    wc = pair_info["prelim_counts"]["white"]
+    group_marks = (["[청 예선]"] * bc) + (["[백 예선]"] * wc)
+else:
+    group_marks = [""] * len(schedule)
+
 if edit_mode and schedule:
     new_codes = []
     st.caption("숫자를 바꾸면 스케줄이 즉시 반영돼. (유효하지 않은 코드는 무시)")
     for i in range(len(schedule)):
-        new_codes.append(st.text_input(f"게임{i+1} VS", value=vs_codes[i] if i < len(vs_codes) else "",
+        new_codes.append(st.text_input(f"게임{i+1} VS",
+                                       value=vs_codes[i] if i < len(vs_codes) else "",
                                        key=f"code_{i}"))
     new_sched = schedule_from_vs_codes(new_codes, len(names))
     if any(g != ((0,0),(0,0)) for g in new_sched):
@@ -413,8 +424,10 @@ if schedule:
     rows = []
     for i, ((a1,a2),(b1,b2)) in enumerate(schedule, start=1):
         code = vs_codes[i-1] if i-1 < len(vs_codes) else f"{min(a1+1,a2+1)}{max(a1+1,a2+1)}:{min(b1+1,b2+1)}{max(b1+1,b2+1)}"
+        grp = group_marks[i-1] if i-1 < len(group_marks) else ""
         rows.append({
             "게임": f"게임{i}",
+            "그룹": grp,
             "VS": code,
             "A팀": f"{label_name(a1)} & {label_name(a2)}",
             "B팀": f"{label_name(b1)} & {label_name(b2)}",
@@ -428,19 +441,20 @@ st.divider()
 # ---------- 3) 대진표 & 점수입력 ----------
 if schedule:
     st.subheader("✍️ 대진표 & 점수입력")
-    hdr = st.columns([1.1, 3, 3, 1, 1])
-    for c, t in zip(hdr, ["구분","A팀 player","B팀 player","A팀 점수","B팀 점수"]):
+    hdr = st.columns([1.1, 1.2, 3, 3, 1, 1])
+    for c, t in zip(hdr, ["구분","그룹","A팀 player","B팀 player","A팀 점수","B팀 점수"]):
         c.markdown(f"**{t}**")
 
     for idx, ((a1,a2),(b1,b2)) in enumerate(schedule, start=1):
-        c = st.columns([1.1, 3, 3, 1, 1])
+        c = st.columns([1.1, 1.2, 3, 3, 1, 1])
         c[0].write(f"게임{idx}")
-        c[1].write(f"{label_name(a1)}, {label_name(a2)}")
-        c[2].write(f"{label_name(b1)}, {label_name(b2)}")
+        c[1].write(group_marks[idx-1] if idx-1 < len(group_marks) else "")
+        c[2].write(f"{label_name(a1)}, {label_name(a2)}")
+        c[3].write(f"{label_name(b1)}, {label_name(b2)}")
         a_init, b_init = scores[idx-1] if idx-1 < len(scores) else (None, None)
-        a_sc = c[3].number_input(f"A{idx}", min_value=0, max_value=win_target,
+        a_sc = c[4].number_input(f"A{idx}", min_value=0, max_value=win_target,
                                  value=int(a_init) if a_init is not None else 0, key=f"g{idx}_A")
-        b_sc = c[4].number_input(f"B{idx}", min_value=0, max_value=win_target,
+        b_sc = c[5].number_input(f"B{idx}", min_value=0, max_value=win_target,
                                  value=int(b_init) if b_init is not None else 0, key=f"g{idx}_B")
         if (a_sc == win_target and b_sc < win_target) or (b_sc == win_target and a_sc < win_target):
             scores[idx-1] = (a_sc, b_sc)
@@ -453,23 +467,20 @@ st.divider()
 # ---------- 4) 순위 섹션 (개인/페어) + 결승/3위전 ----------
 if schedule:
     if pair_info and pair_info.get("mode") == "fixed":
-        st.subheader("🥨 페어 기록 · 순위 (파트너 고정)")
+        st.subheader("🥨 페어 기록 · 순위 (파트너 고정 · 팀내 예선)")
         pair_df = compute_tables_pair(schedule, scores, pair_info["pair_labels"], names, win_target)
 
-        # 팀별 1~2위 추출(본선 4팀)
+        # 팀별 1~2위 추출(본선 2경기)
         blue_sorted = pair_df[pair_df["팀"]=="청"].sort_values(by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]).reset_index(drop=True)
         white_sorted = pair_df[pair_df["팀"]=="백"].sort_values(by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]).reset_index(drop=True)
         blue_top2 = blue_sorted.head(2)
         white_top2 = white_sorted.head(2)
 
-        # (요청) 상단 카드 제거하고 바로 표만 표시
         disp = pair_df[["팀","팀내순위","표시명","경기수","승수","득점","실점","득실차"]].copy()
-        disp["팀내순위"] = disp["팀내순위"].astype(int)
         disp = disp.sort_values(by=["팀","팀내순위"])
         st.dataframe(disp.rename(columns={"팀내순위":"팀내 순위(1~k)"}), use_container_width=True, hide_index=True)
 
         st.divider()
-        # ---------- 본선 4팀 안내 ----------
         st.subheader("🎯 본선 진출 4팀")
         def pair_to_label(p_row) -> str:
             a,b = p_row["페어"]
@@ -487,49 +498,43 @@ if schedule:
                 st.write("• " + pair_to_label(r))
 
         st.divider()
-        # ---------- 결승 / 3위전 ----------
-        st.subheader("🏟️ 결승전 / 3위전 (페어 기준)")
+        # ---------- 결승/3위전: 1위끼리 결승, 2위끼리 3·4위 ----------
+        st.subheader("🏟️ 결승 / 3·4위전")
+        finals_state = st.session_state.get("finals", {"final": (None,None), "bronze": (None,None)})
 
-        finals_state = st.session_state.get("finals", {"bronze": (None,None), "final": (None,None)})
-
-        # 결승 참가자 (청1위 vs 백1위)
-        fin_A = fin_B = None
+        fin_A = fin_B = br_A = br_B = None
         if len(blue_top2)>=1 and len(white_top2)>=1:
             fin_A = tuple(blue_top2.iloc[0]["페어"])
             fin_B = tuple(white_top2.iloc[0]["페어"])
             a1,a2 = fin_A; b1,b2 = fin_B
-            st.markdown(f"**결승** — 청팀 1위 ({a1+1},{a2+1}) · {names[a1]} & {names[a2]}  vs  백팀 1위 ({b1+1},{b2+1}) · {names[b1]} & {names[b2]}")
+            st.markdown(f"**결승** — 청 1위 ({a1+1},{a2+1}) · {names[a1]} & {names[a2]}  vs  백 1위 ({b1+1},{b2+1}) · {names[b1]} & {names[b2]}")
             c1, c2 = st.columns(2)
-            fa = c1.number_input("결승 · A팀 점수 (청1위)", min_value=0, max_value=win_target,
+            fa = c1.number_input("결승 · A팀 점수 (청1위)", 0, win_target,
                                  value=int(finals_state["final"][0]) if finals_state["final"][0] is not None else 0, key="final_A")
-            fb = c2.number_input("결승 · B팀 점수 (백1위)", min_value=0, max_value=win_target,
+            fb = c2.number_input("결승 · B팀 점수 (백1위)", 0, win_target,
                                  value=int(finals_state["final"][1]) if finals_state["final"][1] is not None else 0, key="final_B")
             finals_state["final"] = (fa, fb)
 
-        # 3위전 참가자 (청2위 vs 백2위)
-        br_A = br_B = None
         if len(blue_top2)>=2 and len(white_top2)>=2:
             br_A = tuple(blue_top2.iloc[1]["페어"])
             br_B = tuple(white_top2.iloc[1]["페어"])
             a1,a2 = br_A; b1,b2 = br_B
-            st.markdown(f"**3위전** — 청팀 2위 ({a1+1},{a2+1}) · {names[a1]} & {names[a2]}  vs  백팀 2위 ({b1+1},{b2+1}) · {names[b1]} & {names[b2]}")
+            st.markdown(f"**3·4위전** — 청 2위 ({a1+1},{a2+1}) · {names[a1]} & {names[a2]}  vs  백 2위 ({b1+1},{b2+1}) · {names[b1]} & {names[b2]}")
             c3, c4 = st.columns(2)
-            ba = c3.number_input("3위전 · A팀 점수 (청2위)", min_value=0, max_value=win_target,
+            ba = c3.number_input("3·4위전 · A팀 점수 (청2위)", 0, win_target,
                                  value=int(finals_state["bronze"][0]) if finals_state["bronze"][0] is not None else 0, key="bronze_A")
-            bb = c4.number_input("3위전 · B팀 점수 (백2위)", min_value=0, max_value=win_target,
+            bb = c4.number_input("3·4위전 · B팀 점수 (백2위)", 0, win_target,
                                  value=int(finals_state["bronze"][1]) if finals_state["bronze"][1] is not None else 0, key="bronze_B")
             finals_state["bronze"] = (ba, bb)
 
         st.session_state["finals"] = finals_state
 
-        # ---------- 최종 시상(결승/3위전 결과로 확정) ----------
+        # 시상 계산
         def winner_loser(scA, scB, A_pair, B_pair):
             if None in (scA, scB) or A_pair is None or B_pair is None:
                 return None, None
-            if (scA == win_target and scB < win_target):
-                return A_pair, B_pair
-            if (scB == win_target and scA < win_target):
-                return B_pair, A_pair
+            if (scA == win_target and scB < win_target): return A_pair, B_pair
+            if (scB == win_target and scA < win_target): return B_pair, A_pair
             return None, None
 
         champions, runners = winner_loser(finals_state["final"][0], finals_state["final"][1], fin_A, fin_B)
@@ -543,7 +548,6 @@ if schedule:
 
         st.divider()
         st.subheader("🏅 최종 시상")
-
         if champions:
             st.balloons()
             a,b = champions
@@ -571,7 +575,6 @@ if schedule:
         st.subheader("🏆 개인 기록 · 순위")
         rank_df, rounds_by_player = compute_tables_individual(schedule, scores, names, win_target)
 
-        # 포디움(개인전/변동은 유지)
         ordered = rank_df.sort_values("순위").copy()
         top3 = ordered.head(3)
         col1,col2,col3 = st.columns(3)
@@ -587,7 +590,6 @@ if schedule:
                 unsafe_allow_html=True
             )
 
-        # 라운드 스코어 보드
         def round_cell_text(i: int, r: int) -> str:
             lst = rounds_by_player[i]
             if r > len(lst): return ":"
@@ -646,6 +648,7 @@ with st.expander("💾 CSV 내보내기 / 상태 백업·복원"):
 
         export_input = pd.DataFrame([{
             "구분": f"게임{i+1}",
+            "그룹": (["[청 예선]"]*len(schedule))[:i+1][-1] if pair_info and pair_info.get("mode")=="fixed" else "",
             "A팀 player": f"{label_name(a1)}, {label_name(a2)}",
             "B팀 player": f"{label_name(b1)}, {label_name(b2)}",
             "A팀 점수": scores[i][0] if scores[i][0] is not None else "",
@@ -661,7 +664,7 @@ with st.expander("💾 CSV 내보내기 / 상태 백업·복원"):
         "vs_codes": st.session_state.get("vs_codes", []),
         "meta": {"win_target": st.session_state.get("win_target"),
                  "pair_info_mode": st.session_state.get("pair_info", {}).get("mode","")},
-        "finals": st.session_state.get("finals", {"bronze": (None,None), "final": (None,None)}),
+        "finals": st.session_state.get("finals", {"final": (None,None), "bronze": (None,None)}),
     }, ensure_ascii=False)
     st.download_button("상태 백업(JSON)", state_blob.encode("utf-8"), file_name="mokwoo_state.json")
 
@@ -672,5 +675,5 @@ with st.expander("💾 CSV 내보내기 / 상태 백업·복원"):
         st.session_state["schedule"] = [tuple(map(tuple, g)) for g in data.get("schedule", st.session_state.get("schedule", []))]
         st.session_state["scores"] = [tuple(s) if s is not None else (None, None) for s in data.get("scores", st.session_state.get("scores", []))]
         st.session_state["vs_codes"] = data.get("vs_codes", st.session_state.get("vs_codes", []))
-        st.session_state["finals"] = data.get("finals", st.session_state.get("finals", {"bronze": (None,None), "final": (None,None)}))
+        st.session_state["finals"] = data.get("finals", st.session_state.get("finals", {"final": (None,None), "bronze": (None,None)}))
         st.rerun()
