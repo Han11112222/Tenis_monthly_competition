@@ -209,10 +209,9 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
         ascending=[True, False, False, False, True]
     ).copy()
 
-    # 팀 내 순위 = 현재 정렬 순서 기반 누적 카운트 + 1 (에러 수정 포인트)
+    # 팀 내 순위 = 현재 정렬 순서 기반 누적 카운트 + 1
     pair_df["팀내순위"] = pair_df.groupby("팀").cumcount() + 1
 
-    # 표시용 정수 캐스팅
     for col in ["경기수","승수","득점","실점","득실차","팀내순위"]:
         pair_df[col] = pair_df[col].astype(int)
 
@@ -364,10 +363,18 @@ if "names" not in st.session_state:
 # ---------- 1) 선수 명단 입력 ----------
 st.subheader("🧑‍🤝‍🧑 선수 명단 입력")
 names = st.session_state["names"]
+team_labels: Dict[int,str] = st.session_state.get("team_labels", {})
+team_mode = st.session_state.get("team_mode", False)
+
 cols = st.columns(4)
 for i in range(len(names)):
     with cols[i % 4]:
-        names[i] = st.text_input(f"번호 {i+1}", value=names[i], key=f"name_{i}")
+        label = f"번호 {i+1}"
+        if team_mode and i in team_labels:
+            tl = team_labels[i]          # 예: '청1' / '백2'
+            team_word = "청팀" if tl.startswith("청") else "백팀"
+            label = f"번호 {i+1} ({team_word}{tl[1:]})"
+        names[i] = st.text_input(label, value=names[i], key=f"name_{i}")
 st.session_state["names"] = names
 
 st.divider()
@@ -375,14 +382,14 @@ st.divider()
 schedule: list[Game] = st.session_state.get("schedule", [])
 scores: list[tuple[int|None,int|None]] = st.session_state.get("scores", [])
 vs_codes: list[str] = st.session_state.get("vs_codes", [])
-team_labels: Dict[int,str] = st.session_state.get("team_labels", {})
-team_mode = st.session_state.get("team_mode", False)
 pair_info = st.session_state.get("pair_info", None)
 win_target = st.session_state.get("win_target", 6)
 
 def label_name(idx: int) -> str:
     if team_mode and idx in team_labels:
-        return f"{team_labels[idx]} · {names[idx]}"
+        tl = team_labels[idx]  # '청1' 등
+        team_word = "청팀" if tl.startswith("청") else "백팀"
+        return f"{team_word}{tl[1:]} · {names[idx]}"
     return names[idx]
 
 # ---------- 2) 대진표(숫자 + 팀 이름) ----------
@@ -484,8 +491,8 @@ if schedule:
 
         def pair_to_label(p: tuple[int,int]) -> str:
             a,b = p
-            prefix = "청" if pair_info["pair_labels"][tuple(sorted(p))]==0 else "백"
-            return f"{prefix}({a+1},{b+1}) · {names[a]} & {names[b]}"
+            prefix = "청팀" if pair_info["pair_labels"][tuple(sorted(p))]==0 else "백팀"
+            return f"{prefix}{a+1 if '청' in prefix else a+1}({a+1},{b+1}) · {names[a]} & {names[b]}"
 
         finals_state = st.session_state.get("finals", {"bronze": (None,None), "final": (None,None)})
 
@@ -532,13 +539,27 @@ if schedule:
         def pair_badge(p):
             if not p: return "-"
             a,b = p
-            prefix = "청" if pair_info["pair_labels"][tuple(sorted(p))]==0 else "백"
-            return f"{prefix}({a+1},{b+1}) · {names[a]} & {names[b]}"
+            prefix = "청팀" if pair_info["pair_labels"][tuple(sorted(p))]==0 else "백팀"
+            return f"{prefix}{''} ({a+1},{b+1}) · {names[a]} & {names[b]}"
 
+        # 화려한 우승 배너
         st.divider()
         st.subheader("🏅 최종 시상")
-        colA,colB,colC,colD = st.columns(4)
-        colA.success(f"우승 🥇: {pair_badge(champions)}")
+        if champions:
+            st.balloons()
+            a,b = champions
+            prefix = "청팀" if pair_info["pair_labels"][tuple(sorted(champions))]==0 else "백팀"
+            html = f"""
+            <div style="padding:24px;border-radius:20px;background:linear-gradient(135deg,#ffd700, #ff9a00);
+                        box-shadow:0 8px 24px rgba(0,0,0,.12);">
+              <div style="font-size:32px;line-height:1.2;">🏆 <b>우승</b></div>
+              <div style="font-size:22px;margin-top:8px;"><b>{prefix}</b> — ({a+1},{b+1}) · {names[a]} &amp; {names[b]}</div>
+              <div style="margin-top:6px;font-size:14px;opacity:.9">결승 스코어: {finals_state['final'][0]} : {finals_state['final'][1]}</div>
+            </div>
+            """
+            st.markdown(html, unsafe_allow_html=True)
+
+        colB,colC,colD = st.columns(3)
         colB.info   (f"준우승 🥈: {pair_badge(runners)}")
         colC.warning(f"3위 🥉: {pair_badge(third)}")
         colD.write  (f"4위 : {pair_badge(fourth)}")
