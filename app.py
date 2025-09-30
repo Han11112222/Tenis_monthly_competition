@@ -462,24 +462,7 @@ if schedule:
         blue_top2 = blue_sorted.head(2)
         white_top2 = white_sorted.head(2)
 
-        # 포디움 카드(예선 기준)
-        col1,col2,col3 = st.columns(3)
-        podium = pd.concat([blue_sorted, white_sorted], axis=0).sort_values(
-            by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]
-        ).head(3)
-        cards = [(col1,"🥇","#fff3b0"), (col2,"🥈","#e5e7eb"), (col3,"🥉","#f5e1c8")]
-        for (col, medal, bg), (_, row) in zip(cards, podium.iterrows()):
-            col.markdown(
-                f"""
-                <div style="padding:14px;border-radius:14px;background:{bg};">
-                  <div style="font-size:22px">{medal} <b>{row['표시명']}</b></div>
-                  <div style="margin-top:6px;">승수 {int(row['승수'])} · 득점 {int(row['득점'])} · 실점 {int(row['실점'])} · 득실차 <b>{int(row['득실차'])}</b></div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-        # 표: 팀별 내 순위(청/백 각각 1~k위 표시)
+        # (요청) 상단 카드 제거하고 바로 표만 표시
         disp = pair_df[["팀","팀내순위","표시명","경기수","승수","득점","실점","득실차"]].copy()
         disp["팀내순위"] = disp["팀내순위"].astype(int)
         disp = disp.sort_values(by=["팀","팀내순위"])
@@ -561,7 +544,6 @@ if schedule:
         st.divider()
         st.subheader("🏅 최종 시상")
 
-        # 우승 히어로 배너 + 아래에 준우승/3위/4위 순서대로
         if champions:
             st.balloons()
             a,b = champions
@@ -589,7 +571,7 @@ if schedule:
         st.subheader("🏆 개인 기록 · 순위")
         rank_df, rounds_by_player = compute_tables_individual(schedule, scores, names, win_target)
 
-        # 포디움
+        # 포디움(개인전/변동은 유지)
         ordered = rank_df.sort_values("순위").copy()
         top3 = ordered.head(3)
         col1,col2,col3 = st.columns(3)
