@@ -165,7 +165,7 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
                         names: list[str], win_target: int):
     """
     페어 단위 집계. pair_labels: {(a,b): team_id} (a<b)
-    반환: pair_df(팀, 페어(tuple), 표시명, 승/득/실/득실차, 팀내순위)
+    반환: pair_df(팀, 팀내순위, 페어(tuple), 표시명, 승/득/실/득실차)
     """
     pair_keys = list(pair_labels.keys())
     # 초기화
@@ -202,15 +202,16 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
     pair_df = pd.DataFrame(stats).T
     pair_df["득실차"] = pair_df["득점"] - pair_df["실점"]
 
-    # 팀 먼저, 그다음 팀 내부 정렬(득실차↓, 승수↓, 득점↓, 실점↑)
+    # 팀 먼저, 팀 내부 정렬(득실차↓, 승수↓, 득점↓, 실점↑)
     pair_df = pair_df.sort_values(
         by=["팀","득실차","승수","득점","실점"],
         ascending=[True, False, False, False, True]
     ).copy()
 
-    # 팀 내 순위 = 현재 정렬 순서 기반 누적 카운트 + 1 (pandas 에러 수정)
+    # 팀 내 순위 = 1..k 로 부여
     pair_df["팀내순위"] = pair_df.groupby("팀").cumcount() + 1
 
+    # 표시는 정수
     for col in ["경기수","승수","득점","실점","득실차","팀내순위"]:
         pair_df[col] = pair_df[col].astype(int)
 
@@ -455,17 +456,17 @@ if schedule:
         st.subheader("🥨 페어 기록 · 순위 (파트너 고정)")
         pair_df = compute_tables_pair(schedule, scores, pair_info["pair_labels"], names, win_target)
 
-        # 팀별 1~2위 추출(결승/3위전용)
-        by_team = {
-            "청": pair_df[pair_df["팀"]=="청"].sort_values(by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]),
-            "백": pair_df[pair_df["팀"]=="백"].sort_values(by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]),
-        }
-        blue_top2 = by_team["청"].head(2)
-        white_top2 = by_team["백"].head(2)
+        # 팀별 1~2위 추출(본선 4팀)
+        blue_sorted = pair_df[pair_df["팀"]=="청"].sort_values(by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]).reset_index(drop=True)
+        white_sorted = pair_df[pair_df["팀"]=="백"].sort_values(by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]).reset_index(drop=True)
+        blue_top2 = blue_sorted.head(2)
+        white_top2 = white_sorted.head(2)
 
         # 포디움 카드(예선 기준)
         col1,col2,col3 = st.columns(3)
-        podium = pair_df.sort_values(by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]).head(3)
+        podium = pd.concat([blue_sorted, white_sorted], axis=0).sort_values(
+            by=["득실차","승수","득점","실점"], ascending=[False,False,False,True]
+        ).head(3)
         cards = [(col1,"🥇","#fff3b0"), (col2,"🥈","#e5e7eb"), (col3,"🥉","#f5e1c8")]
         for (col, medal, bg), (_, row) in zip(cards, podium.iterrows()):
             col.markdown(
@@ -478,44 +479,61 @@ if schedule:
                 unsafe_allow_html=True
             )
 
-        disp = pair_df[["팀","표시명","경기수","승수","득점","실점","득실차"]].copy()
-        disp.insert(0, "순위", range(1, len(disp)+1))
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+        # 표: 팀별 내 순위(청/백 각각 1~k위 표시)
+        disp = pair_df[["팀","팀내순위","표시명","경기수","승수","득점","실점","득실차"]].copy()
+        disp["팀내순위"] = disp["팀내순위"].astype(int)
+        disp = disp.sort_values(by=["팀","팀내순위"])
+        st.dataframe(disp.rename(columns={"팀내순위":"팀내 순위(1~k)"}), use_container_width=True, hide_index=True)
+
+        st.divider()
+        # ---------- 본선 4팀 안내 ----------
+        st.subheader("🎯 본선 진출 4팀")
+        def pair_to_label(p_row) -> str:
+            a,b = p_row["페어"]
+            color = p_row["팀"]
+            return f"{color}팀 {p_row['팀내순위']}위 — ({a+1},{b+1}) · {names[a]} & {names[b]}"
+
+        colA, colB = st.columns(2)
+        with colA:
+            st.markdown("**청팀**")
+            for _, r in blue_top2.iterrows():
+                st.write("• " + pair_to_label(r))
+        with colB:
+            st.markdown("**백팀**")
+            for _, r in white_top2.iterrows():
+                st.write("• " + pair_to_label(r))
 
         st.divider()
         # ---------- 결승 / 3위전 ----------
-        st.subheader("🏟️ 결승전 / 준결승전 (페어 기준)")
-
-        def pair_to_label(p: tuple[int,int]) -> str:
-            a,b = p
-            prefix = "청팀" if pair_info["pair_labels"][tuple(sorted(p))]==0 else "백팀"
-            return f"{prefix} ({a+1},{b+1}) · {names[a]} & {names[b]}"
+        st.subheader("🏟️ 결승전 / 3위전 (페어 기준)")
 
         finals_state = st.session_state.get("finals", {"bronze": (None,None), "final": (None,None)})
 
-        # 결승 참가자
+        # 결승 참가자 (청1위 vs 백1위)
         fin_A = fin_B = None
         if len(blue_top2)>=1 and len(white_top2)>=1:
             fin_A = tuple(blue_top2.iloc[0]["페어"])
             fin_B = tuple(white_top2.iloc[0]["페어"])
-            st.markdown(f"**결승** — {pair_to_label(fin_A)}  vs  {pair_to_label(fin_B)}")
+            a1,a2 = fin_A; b1,b2 = fin_B
+            st.markdown(f"**결승** — 청팀 1위 ({a1+1},{a2+1}) · {names[a1]} & {names[a2]}  vs  백팀 1위 ({b1+1},{b2+1}) · {names[b1]} & {names[b2]}")
             c1, c2 = st.columns(2)
-            fa = c1.number_input("결승 · A팀 점수", min_value=0, max_value=win_target,
+            fa = c1.number_input("결승 · A팀 점수 (청1위)", min_value=0, max_value=win_target,
                                  value=int(finals_state["final"][0]) if finals_state["final"][0] is not None else 0, key="final_A")
-            fb = c2.number_input("결승 · B팀 점수", min_value=0, max_value=win_target,
+            fb = c2.number_input("결승 · B팀 점수 (백1위)", min_value=0, max_value=win_target,
                                  value=int(finals_state["final"][1]) if finals_state["final"][1] is not None else 0, key="final_B")
             finals_state["final"] = (fa, fb)
 
-        # 3위전 참가자
+        # 3위전 참가자 (청2위 vs 백2위)
         br_A = br_B = None
         if len(blue_top2)>=2 and len(white_top2)>=2:
             br_A = tuple(blue_top2.iloc[1]["페어"])
             br_B = tuple(white_top2.iloc[1]["페어"])
-            st.markdown(f"**3위전** — {pair_to_label(br_A)}  vs  {pair_to_label(br_B)}")
+            a1,a2 = br_A; b1,b2 = br_B
+            st.markdown(f"**3위전** — 청팀 2위 ({a1+1},{a2+1}) · {names[a1]} & {names[a2]}  vs  백팀 2위 ({b1+1},{b2+1}) · {names[b1]} & {names[b2]}")
             c3, c4 = st.columns(2)
-            ba = c3.number_input("3위전 · A팀 점수", min_value=0, max_value=win_target,
+            ba = c3.number_input("3위전 · A팀 점수 (청2위)", min_value=0, max_value=win_target,
                                  value=int(finals_state["bronze"][0]) if finals_state["bronze"][0] is not None else 0, key="bronze_A")
-            bb = c4.number_input("3위전 · B팀 점수", min_value=0, max_value=win_target,
+            bb = c4.number_input("3위전 · B팀 점수 (백2위)", min_value=0, max_value=win_target,
                                  value=int(finals_state["bronze"][1]) if finals_state["bronze"][1] is not None else 0, key="bronze_B")
             finals_state["bronze"] = (ba, bb)
 
@@ -523,7 +541,6 @@ if schedule:
 
         # ---------- 최종 시상(결승/3위전 결과로 확정) ----------
         def winner_loser(scA, scB, A_pair, B_pair):
-            # win_target 먼저 도달하고 상대는 미만
             if None in (scA, scB) or A_pair is None or B_pair is None:
                 return None, None
             if (scA == win_target and scB < win_target):
@@ -538,22 +555,22 @@ if schedule:
         def pair_badge(p):
             if not p: return "-"
             a,b = p
-            prefix = "청팀" if pair_info["pair_labels"][tuple(sorted(p))] == 0 else "백팀"
-            return f"{prefix} ({a+1},{b+1}) · {names[a]} & {names[b]}"
+            color = "청팀" if pair_info["pair_labels"][tuple(sorted(p))] == 0 else "백팀"
+            return f"{color} ({a+1},{b+1}) · {names[a]} & {names[b]}"
 
         st.divider()
         st.subheader("🏅 최종 시상")
 
-        # 우승 히어로 배너
+        # 우승 히어로 배너 + 아래에 준우승/3위/4위 순서대로
         if champions:
             st.balloons()
             a,b = champions
-            prefix = "청팀" if pair_info["pair_labels"][tuple(sorted(champions))]==0 else "백팀"
+            color = "청팀" if pair_info["pair_labels"][tuple(sorted(champions))]==0 else "백팀"
             html = f"""
             <div style="padding:26px;border-radius:22px;background:linear-gradient(135deg,#ffd700 0%,#ffb700 35%,#ff8a00 100%);
-                        color:#1f2937; box-shadow:0 10px 28px rgba(0,0,0,.18); margin-bottom:14px;">
+                        color:#1f2937; box-shadow:0 10px 28px rgba(0,0,0,.18); margin-bottom:10px;">
               <div style="font-size:36px;line-height:1.15; font-weight:800;">🎉 최종 우승</div>
-              <div style="font-size:22px;margin-top:8px;"><b>{prefix}</b> — ({a+1},{b+1}) · {names[a]} &amp; {names[b]}</div>
+              <div style="font-size:22px;margin-top:8px;"><b>{color}</b> — ({a+1},{b+1}) · {names[a]} &amp; {names[b]}</div>
               <div style="margin-top:6px;font-size:14px;opacity:.9">결승 스코어: {finals_state['final'][0]} : {finals_state['final'][1]}</div>
             </div>
             """
@@ -561,11 +578,11 @@ if schedule:
         else:
             st.info("최종 우승: -")
 
-        # 나머지 시상 라인(고정 표기)
-        c1,c2,c3 = st.columns(3)
-        c1.write(f"**준우승 🥈**: {pair_badge(runners)}")
-        c2.write(f"**3위팀 🥉**: {pair_badge(third)}")
-        c3.write(f"**4위팀**: {pair_badge(fourth)}")
+        st.markdown(
+            f"**준우승 🥈**: {pair_badge(runners)}  \n"
+            f"**3위팀 🥉**: {pair_badge(third)}  \n"
+            f"**4위팀**: {pair_badge(fourth)}"
+        )
 
     else:
         # 개인 집계(개인전 / 팀전-변동)
