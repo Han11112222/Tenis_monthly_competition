@@ -462,7 +462,7 @@ if schedule:
         blue_top2 = blue_sorted.head(2)
         white_top2 = white_sorted.head(2)
 
-        # 표(상단 카드 제거)
+        # (요청) 상단 카드 제거하고 바로 표만 표시
         disp = pair_df[["팀","팀내순위","표시명","경기수","승수","득점","실점","득실차"]].copy()
         disp["팀내순위"] = disp["팀내순위"].astype(int)
         disp = disp.sort_values(by=["팀","팀내순위"])
@@ -541,95 +541,37 @@ if schedule:
             color = "청팀" if pair_info["pair_labels"][tuple(sorted(p))] == 0 else "백팀"
             return f"{color} ({a+1},{b+1}) · {names[a]} & {names[b]}"
 
-        # ---- 카드 렌더 함수들
-        def hero_card(title: str, desc: str, sub: str):
-            html = f"""
-            <div style="padding:26px;border-radius:22px;background:linear-gradient(135deg,#ffd700 0%,#ffb700 35%,#ff8a00 100%);
-                        color:#1f2937; box-shadow:0 10px 28px rgba(0,0,0,.18); margin-bottom:12px;">
-              <div style="font-size:36px;line-height:1.15; font-weight:800;">🎉 {title}</div>
-              <div style="font-size:22px;margin-top:8px;">{desc}</div>
-              <div style="margin-top:6px;font-size:14px;opacity:.9">{sub}</div>
-            </div>
-            """
-            st.markdown(html, unsafe_allow_html=True)
-
-        def mini_card(title: str, desc: str, sub: str, grad: str, emoji: str):
-            html = f"""
-            <div style="padding:14px 16px;border-radius:16px;background:{grad};
-                        color:#111827; box-shadow:0 6px 16px rgba(0,0,0,.12);">
-              <div style="font-size:20px;font-weight:800;">{emoji} {title}</div>
-              <div style="margin-top:6px;font-size:15px;">{desc}</div>
-              <div style="margin-top:4px;font-size:12px;opacity:.85">{sub}</div>
-            </div>
-            """
-            st.markdown(html, unsafe_allow_html=True)
-
         st.divider()
         st.subheader("🏅 최종 시상")
 
-        # 우승 배너
         if champions:
             st.balloons()
-            ca, cb = champions
-            c_color = "청팀" if pair_info["pair_labels"][tuple(sorted(champions))]==0 else "백팀"
-            hero_card(
-                "최종 우승",
-                f"<b>{c_color}</b> — ({ca+1},{cb+1}) · {names[ca]} &amp; {names[cb]}",
-                f"결승 스코어: {finals_state['final'][0]} : {finals_state['final'][1]}"
-            )
+            a,b = champions
+            color = "청팀" if pair_info["pair_labels"][tuple(sorted(champions))]==0 else "백팀"
+            html = f"""
+            <div style="padding:26px;border-radius:22px;background:linear-gradient(135deg,#ffd700 0%,#ffb700 35%,#ff8a00 100%);
+                        color:#1f2937; box-shadow:0 10px 28px rgba(0,0,0,.18); margin-bottom:10px;">
+              <div style="font-size:36px;line-height:1.15; font-weight:800;">🎉 최종 우승</div>
+              <div style="font-size:22px;margin-top:8px;"><b>{color}</b> — ({a+1},{b+1}) · {names[a]} &amp; {names[b]}</div>
+              <div style="margin-top:6px;font-size:14px;opacity:.9">결승 스코어: {finals_state['final'][0]} : {finals_state['final'][1]}</div>
+            </div>
+            """
+            st.markdown(html, unsafe_allow_html=True)
         else:
             st.info("최종 우승: -")
 
-        # 준우승/3위/4위 — 미니 컬러 카드 3개
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if runners:
-                ra, rb = runners
-                r_color = "청팀" if pair_info["pair_labels"][tuple(sorted(runners))]==0 else "백팀"
-                mini_card(
-                    "준우승",
-                    f"<b>{r_color}</b> — ({ra+1},{rb+1}) · {names[ra]} &amp; {names[rb]}",
-                    f"결승 스코어: {finals_state['final'][0]} : {finals_state['final'][1]}",
-                    "linear-gradient(135deg,#cfd9df 0%,#e2ebf0 100%)",
-                    "🥈"
-                )
-            else:
-                st.write("")
-
-        with col2:
-            if third:
-                ta, tb = third
-                t_color = "청팀" if pair_info["pair_labels"][tuple(sorted(third))]==0 else "백팀"
-                mini_card(
-                    "3위팀",
-                    f"<b>{t_color}</b> — ({ta+1},{tb+1}) · {names[ta]} &amp; {names[tb]}",
-                    f"3위전 스코어: {finals_state['bronze'][0]} : {finals_state['bronze'][1]}",
-                    "linear-gradient(135deg,#f6d365 0%,#fda085 100%)",
-                    "🥉"
-                )
-            else:
-                st.write("")
-
-        with col3:
-            if fourth:
-                fa, fb = fourth
-                f_color = "청팀" if pair_info["pair_labels"][tuple(sorted(fourth))]==0 else "백팀"
-                mini_card(
-                    "4위팀",
-                    f"<b>{f_color}</b> — ({fa+1},{fb+1}) · {names[fa]} &amp; {names[fb]}",
-                    "수고하셨습니다!",
-                    "linear-gradient(135deg,#a1c4fd 0%,#c2e9fb 100%)",
-                    "🎖️"
-                )
-            else:
-                st.write("")
+        st.markdown(
+            f"**준우승 🥈**: {pair_badge(runners)}  \n"
+            f"**3위팀 🥉**: {pair_badge(third)}  \n"
+            f"**4위팀**: {pair_badge(fourth)}"
+        )
 
     else:
         # 개인 집계(개인전 / 팀전-변동)
         st.subheader("🏆 개인 기록 · 순위")
         rank_df, rounds_by_player = compute_tables_individual(schedule, scores, names, win_target)
 
-        # 포디움
+        # 포디움(개인전/변동은 유지)
         ordered = rank_df.sort_values("순위").copy()
         top3 = ordered.head(3)
         col1,col2,col3 = st.columns(3)
