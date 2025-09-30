@@ -165,8 +165,8 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
                         pair_labels: Dict[tuple,int],  # pair -> 0(청) / 1(백)
                         names: list[str], win_target: int):
     """
-    페어 단위 집계. pair_labels: {(a,b): team_id}  (a<b)
-    반환: pair_df(팀, 페어(tuple), 표시명, 승/득/실 등)
+    페어 단위 집계. pair_labels: {(a,b): team_id} (a<b)
+    반환: pair_df(팀, 페어(tuple), 표시명, 승/득/실/득실차, 팀내순위)
     """
     pair_keys = list(pair_labels.keys())
     # 초기화
@@ -184,13 +184,12 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
 
     # 경기 반영
     for idx, ((a1,a2),(b1,b2)) in enumerate(schedule, start=1):
-        # 정렬 tuple 로 키
         A = tuple(sorted((a1,a2)))
         B = tuple(sorted((b1,b2)))
-        if A not in stats or B not in stats:  # 파트너 고정 아닌 경우 보호
-            continue
+        if A not in stats or B not in stats:
+            continue  # 변동 모드 대비
         sA, sB = scores[idx-1]
-        if sA is None or sB is None:  # 미완료
+        if sA is None or sB is None:
             continue
         for K,sc_for,sc_against in [(A,sA,sB),(B,sB,sA)]:
             stats[K]["경기수"] += 1
@@ -203,12 +202,20 @@ def compute_tables_pair(schedule: list[Game], scores: list[tuple[int|None,int|No
 
     pair_df = pd.DataFrame(stats).T
     pair_df["득실차"] = pair_df["득점"] - pair_df["실점"]
-    pair_df = pair_df.sort_values(by=["팀","득실차","승수","득점","실점"],
-                                  ascending=[True, False, False, False, True])
-    # 팀별 순위도 붙여두면 편리
-    pair_df["팀내순위"] = pair_df.groupby("팀")["득실차","승수","득점","실점"]\
-                          .apply(lambda d: d.rank(method="min", ascending=[False,False,False,True])["득실차"])\
-                          .astype(int)
+
+    # 팀 먼저, 그다음 팀 내부 정렬(득실차↓, 승수↓, 득점↓, 실점↑)
+    pair_df = pair_df.sort_values(
+        by=["팀","득실차","승수","득점","실점"],
+        ascending=[True, False, False, False, True]
+    ).copy()
+
+    # 팀 내 순위 = 현재 정렬 순서 기반 누적 카운트 + 1 (에러 수정 포인트)
+    pair_df["팀내순위"] = pair_df.groupby("팀").cumcount() + 1
+
+    # 표시용 정수 캐스팅
+    for col in ["경기수","승수","득점","실점","득실차","팀내순위"]:
+        pair_df[col] = pair_df[col].astype(int)
+
     return pair_df
 
 # ========================= 사이드바 =========================
@@ -259,6 +266,7 @@ if gen:
     # 이름 초기화
     st.session_state["names"] = [f"플레이어 {i+1}" for i in range(n_players)]
     st.session_state["team_mode"] = "팀전" in mode
+    st.session_state["win_target"] = win_target
 
     if mode == "각자복식(개인)":
         if n_players == 8:
@@ -280,6 +288,7 @@ if gen:
         st.session_state["scores"] = [(None,None) for _ in schedule]
         st.session_state["pair_info"] = None
         st.session_state["finals"] = {"bronze": (None,None), "final": (None,None)}
+
     else:
         # 팀 준비
         team_size = n_players // 2
@@ -318,10 +327,8 @@ if gen:
 
             # 페어 정보(결승용 라벨 포함) 저장
             pair_labels = {}
-            for i,(a,b) in enumerate(bp, start=1):
-                pair_labels[tuple(sorted((a,b)))] = 0  # 청
-            for i,(a,b) in enumerate(wp, start=1):
-                pair_labels[tuple(sorted((a,b)))] = 1  # 백
+            for a,b in bp: pair_labels[tuple(sorted((a,b)))] = 0  # 청
+            for a,b in wp: pair_labels[tuple(sorted((a,b)))] = 1  # 백
             st.session_state["pair_info"] = {
                 "mode": "fixed",
                 "blue_pairs": bp,
@@ -344,7 +351,6 @@ if gen:
         st.session_state["schedule"] = schedule
         st.session_state["vs_codes"] = vs_codes
         st.session_state["scores"] = [(None,None) for _ in schedule]
-        st.session_state["win_target"] = win_target
         # 결승/3위전 점수 상태
         st.session_state["finals"] = {"bronze": (None,None), "final": (None,None)}
 
@@ -468,7 +474,6 @@ if schedule:
                 unsafe_allow_html=True
             )
 
-        # 표시는 간단히
         disp = pair_df[["팀","표시명","경기수","승수","득점","실점","득실차"]].copy()
         disp.insert(0, "순위", range(1, len(disp)+1))
         st.dataframe(disp, use_container_width=True, hide_index=True)
