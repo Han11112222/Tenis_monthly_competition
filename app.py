@@ -5,7 +5,7 @@ from typing import List, Tuple, Dict, Optional
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="목우회 월례회 대진표", layout="wide")
+st.set_page_config(page_title="월례회 대진표", layout="wide")
 
 # ---------- 타입 ----------
 Game = Tuple[Tuple[int, int], Tuple[int, int]]  # ((A1,A2),(B1,B2)) — 0-index
@@ -353,7 +353,7 @@ if gen:
         st.session_state["finals"] = {"final": (None,None), "bronze": (None,None)}
 
 # ========================= 본문 =========================
-st.title("🎾 목우회 월례회 대진표")
+st.title("🎾월례회 대진표")
 
 if "names" not in st.session_state:
     st.info("좌측에서 모드/인원 설정 후 **대진표 생성**을 눌러 시작해줘.")
